@@ -39,6 +39,8 @@ It accepts a connections string `url` or you can pass your existing `db` object.
 
 > When changing ttl durations or switching on/off **ttlAfterDisconnected** on an existing database, **dropExistingIndexes** needs to be set to true for ttl indexes to be updated.
 
+> If a collection already has an index with the same key and options as one this library creates, but under another name (for example a `topic_1` index created by hand on `retained`), that index is kept and no duplicate is created.
+
 ### Examples
 
 ```js

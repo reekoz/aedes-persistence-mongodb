@@ -311,6 +311,41 @@ async function doTest () {
     await cleanUpPersistence(t, p1)
   })
 
+  test('keep an equivalent index created under another name', async (t) => {
+    t.plan(2)
+    const { mongoClient, db } = await createDB()
+    // same key and options as query_topic, under MongoDB's default name
+    await db.collection('retained').createIndex({ topic: 1 }, { unique: true })
+    await mongoClient.close()
+
+    const p1 = await setUpPersistence(t, '1', defaultDBopts)
+    const indexes = await getDB(p1).collection('retained').indexInformation({ full: true })
+    const names = indexes.map(index => index.name)
+    t.assert.ok(names.includes('topic_1'), 'must keep the existing index')
+    t.assert.ok(!names.includes('query_topic'), 'must not create a duplicate index')
+    await cleanUpPersistence(t, p1)
+  })
+
+  test('fail on an index conflict that is not equivalent', async (t) => {
+    t.plan(1)
+    const { mongoClient, db } = await createDB()
+    // same key as the retained ttl index, but another expiry
+    await db.collection('retained').createIndex({ added: 1 }, { expireAfterSeconds: 60 })
+    await mongoClient.close()
+
+    const dbopts = structuredClone(defaultDBopts)
+    // only on retained, so no other ttl index is still being built when the next test starts
+    dbopts.ttl = { packets: { retained: 30 } }
+    const mqEmitter = await getEmitter(dbopts)
+    const instance = persistence(dbopts)
+    instance.broker = toBroker('1', mqEmitter)
+    const [err] = await once(instance, 'error')
+    t.assert.equal(err.code, 85, 'must report the conflict')
+    // setup failed, so destroy() has nothing to tear down: close the client
+    await instance.asyncPersistence._mongoDBclient.close()
+    await closeEmitter(mqEmitter)
+  })
+
   test('look up for packet with added property', async (t) => {
     t.plan(1)
     await cleanDB()

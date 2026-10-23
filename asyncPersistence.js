@@ -3,6 +3,7 @@
 const regEscape = require('escape-string-regexp')
 const Packet = require('aedes-persistence').Packet
 const BroadcastPersistence = require('aedes-persistence/broadcastPersistence.js')
+const { isDeepStrictEqual } = require('node:util')
 const { MongoClient } = require('mongodb')
 const { Qlobber } = require('qlobber')
 const QlobberSub = require('qlobber/aedes/qlobber-sub')
@@ -12,6 +13,8 @@ const QLOBBER_OPTIONS = {
   wildcard_some: '#',
   match_empty_levels: true
 }
+// MongoDB error code for an index that clashes with an existing one
+const INDEX_OPTIONS_CONFLICT = 85
 
 // Batching limits for retained message pattern queries
 // MongoDB has a BSON document size limit of 16MB, but regex patterns hit
@@ -168,7 +171,17 @@ class AsyncMongoPersistence {
       if (idx.unique) {
         indexOpts.unique = true
       }
-      await this.#cl[idx.collection].createIndex(idx.key, indexOpts)
+      const collection = this.#cl[idx.collection]
+      try {
+        await collection.createIndex(idx.key, indexOpts)
+      } catch (err) {
+        // An index with the same key and options already exists under another
+        // name (e.g. `topic_1`, created by hand): it serves the same queries,
+        // so keep it instead of failing setup. Any other conflict is reported.
+        if (err.code !== INDEX_OPTIONS_CONFLICT || !(await hasEquivalentIndex(collection, idx.key, indexOpts))) {
+          throw err
+        }
+      }
     }
 
     const indexes = [
@@ -649,6 +662,17 @@ async function updatePacket (db, client, packet) {
       packet
     }
   })
+}
+
+async function hasEquivalentIndex (collection, key, opts) {
+  const indexes = await collection.indexes()
+  // key order matters in an index, so compare the entries, not the objects
+  return indexes.some(index =>
+    index.name !== opts.name &&
+    isDeepStrictEqual(Object.entries(index.key), Object.entries(key)) &&
+    !!index.unique === !!opts.unique &&
+    index.expireAfterSeconds === opts.expireAfterSeconds
+  )
 }
 
 function promiseWithResolvers () {
