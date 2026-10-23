@@ -13,8 +13,10 @@ const QLOBBER_OPTIONS = {
   wildcard_some: '#',
   match_empty_levels: true
 }
-// MongoDB error code for an index that clashes with an existing one
+// MongoDB's IndexOptionsConflict error code
 const INDEX_OPTIONS_CONFLICT = 85
+// index spec fields that name an index or record how it was built, not what it serves
+const INDEX_META_FIELDS = new Set(['v', 'ns', 'name', 'key', 'background'])
 
 // Batching limits for retained message pattern queries
 // MongoDB has a BSON document size limit of 16MB, but regex patterns hit
@@ -175,12 +177,10 @@ class AsyncMongoPersistence {
       try {
         await collection.createIndex(idx.key, indexOpts)
       } catch (err) {
-        // An index with the same key and options already exists under another
-        // name (e.g. `topic_1`, created by hand): it serves the same queries,
-        // so keep it instead of failing setup. Any other conflict is reported.
-        if (err.code !== INDEX_OPTIONS_CONFLICT || !(await hasEquivalentIndex(collection, idx.key, indexOpts))) {
-          throw err
-        }
+        // an equivalent index under another name serves the same queries: keep it
+        const tolerated = err.code === INDEX_OPTIONS_CONFLICT &&
+          await hasEquivalentIndex(collection, idx.key, indexOpts)
+        if (!tolerated) throw err
       }
     }
 
@@ -664,14 +664,16 @@ async function updatePacket (db, client, packet) {
   })
 }
 
+function indexOptions (spec) {
+  return Object.fromEntries(Object.entries(spec).filter(([field]) => !INDEX_META_FIELDS.has(field)))
+}
+
 async function hasEquivalentIndex (collection, key, opts) {
   const indexes = await collection.indexes()
   // key order matters in an index, so compare the entries, not the objects
   return indexes.some(index =>
-    index.name !== opts.name &&
     isDeepStrictEqual(Object.entries(index.key), Object.entries(key)) &&
-    !!index.unique === !!opts.unique &&
-    index.expireAfterSeconds === opts.expireAfterSeconds
+    isDeepStrictEqual(indexOptions(index), indexOptions(opts))
   )
 }
 
